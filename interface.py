@@ -1,6 +1,7 @@
 import serial
 import time
 import numpy as np
+import math
 
 # チャンネル3は手首で500側が内側に閉じる、2500側が上に上がる
 # チャンネル2は関節で500側が上向きに上げる
@@ -14,7 +15,7 @@ TOTAL_CHANNELS = 6  # チャンネル数
 BASE_SPEED = 300
 LINK1_LENGTH = 145  # mm
 LINK2_LENGTH = 130  # mm
-LINK3_LENHTH = 60  # mm
+LINK3_LENGTH = 60  # mm
 
 
 class AL5D:
@@ -76,17 +77,25 @@ class AL5D:
         for i, angle in enumerate(angles):
             self.move_servo(i, angle, BASE_SPEED)
 
-    # def forward_kinematics(self):
+    def forward_kinematics(self, theta1, theta2, theta3, theta4):
+        x1 = LINK1_LENGTH * (math.cos(theta1) * math.cos(theta2))
+        y1 = LINK1_LENGTH * (math.sin(theta1) * math.cos(theta2))
+        z1 = LINK1_LENGTH * math.sin(theta2)
+        x2 = x1 + (LINK2_LENGTH * (math.cos(theta1) * math.cos(theta2 + theta3)))
+        y2 = x1 + (LINK2_LENGTH * (math.sin(theta1) * math.cos(theta2 + theta3)))
+        z2 = x1 + (LINK2_LENGTH * math.sin(theta2 + theta3))
+        x3 = x2 + (
+            LINK3_LENGTH * (math.cos(theta1) * math.cos(theta2 + theta3 + theta4))
+        )
+        y3 = x2 + (
+            LINK3_LENGTH * (math.sin(theta1) * math.cos(theta2 + theta3 + theta4))
+        )
+        z3 = x3 + ((LINK3_LENGTH * math.sin(theta2 + theta3 + theta4)))
+        position = [[x1, y1, z1], [x2, y2, z2], [x3, y3, z3]]
+        return position
 
     def inverse_kinematics(self, x: float, y: float, z: float) -> np.ndarray:
-        # 簡単な逆運動学の例
-        # 実際の計算はAL5Dの物理的な特性に依存します
-        base_angle = int(BASE_ANGLE + (x * 100))
-        shoulder_angle = int(BASE_ANGLE + (y * 100))
-        elbow_angle = int(BASE_ANGLE + (z * 100))
-        return np.array(
-            [base_angle, shoulder_angle, elbow_angle, BASE_ANGLE, BASE_ANGLE]
-        )
+        theta1 = math.atan2()
 
 
 if __name__ == "__main__":
