@@ -76,3 +76,60 @@ except ValueError as e:
 また、アームは ② と同じように伸びる方向なので、② と同様の変化となる。
 
 ![](Robot_arm_4.jpg)
+
+有効な範囲を調べるプログラム
+
+```
+    # AL5Dクラスのインスタンスを作成
+    robot = AL5D()
+
+    # 関節角度の範囲と刻み幅を定義
+    MIN_ANGLE = robot.MIN_ANGLE  # -90度
+    MAX_ANGLE = robot.MAX_ANGLE  # +90度
+    ANGLE_STEP = 10  # 角度の刻み幅（度）
+
+    # 各関節の角度範囲を生成
+    theta1_values = np.arange(MIN_ANGLE, MAX_ANGLE + 1, ANGLE_STEP)
+    theta2_values = np.arange(MIN_ANGLE, MAX_ANGLE + 1, ANGLE_STEP)
+    theta3_values = np.arange(MIN_ANGLE, MAX_ANGLE + 1, ANGLE_STEP)
+
+    # 有効な座標を格納するリスト
+    valid_positions = []
+
+    # 総当たりで各角度の組み合わせを計算
+    for theta1_deg in theta1_values:
+        for theta2_deg in theta2_values:
+            for theta3_deg in theta3_values:
+                # 角度をラジアンに変換
+                theta1_rad = math.radians(theta1_deg)
+                theta2_rad = math.radians(theta2_deg)
+                theta3_rad = math.radians(theta3_deg)
+                theta4_rad = robot.THETA4  # THETA4は定数
+
+                # 順運動学を計算
+                try:
+                    position = robot.forward_kinematics(
+                        theta1_rad, theta2_rad, theta3_rad, theta4_rad
+                    )
+                    x, y, z = position["エンドエフェクタ座標[x,y,z]"]
+
+                    # 座標をリストに追加
+                    valid_positions.append((x, y, z))
+                except Exception as e:
+                    # 計算エラーをキャッチ（エラーが発生した場合は無視）
+                    print(
+                        f"エラー: θ1={theta1_deg}, θ2={theta2_deg}, θ3={theta3_deg} - {e}"
+                    )
+                    continue
+
+    # 結果の表示
+    print(f"有効な座標の総数: {len(valid_positions)}")
+
+    # オプション: 座標をファイルに保存
+    with open("valid_positions.txt", "w", encoding="utf-8") as f:
+        for pos in valid_positions:
+            f.write(f"{pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f}\n")
+
+    print("有効な座標を 'valid_positions.txt' ファイルに保存しました。")
+
+```
