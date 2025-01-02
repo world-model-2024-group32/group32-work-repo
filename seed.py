@@ -23,10 +23,6 @@ def forward_kinematics(theta1_deg, theta2_deg, theta3_deg, theta4_deg):
     theta3 = math.radians(theta3_deg)
     theta4 = math.radians(theta4_deg)
     print([theta1, theta2, theta3, theta4])
-    # theta1 = theta1_deg
-    # theta2 = theta2_deg
-    # theta3 = theta3_deg
-    # theta4 = theta4_deg
 
     # リンクの長さ
     L1 = LINK1_LENGTH
@@ -70,14 +66,11 @@ def inverse_kinematics(x: float, y: float, z: float):
     # ベース座標系から見た腕の平面上の距離 r
     r = math.sqrt(x**2 + y**2)
 
-    # リンク1を考慮しない高さ
-    z_offset = z - LINK1_LENGTH
-
     # リンク1の高さを考慮しないベース座標から入力座標までの距離d
-    d = math.sqrt(r**2 + z_offset**2)
+    d = math.sqrt(r**2 + z**2)
 
     # dがリンク2とリンク3の長さの合計を超えていないか確認
-    if d > (L2 + L3):
+    if d > (L2 + L1):
         raise ValueError("目標位置が到達不可能です。")
 
     diff_x = L3 * math.cos(angles[1] + angles[2] + angles[3]) * math.cos(angles[0])

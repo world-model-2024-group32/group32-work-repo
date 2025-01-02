@@ -2,6 +2,7 @@ import serial
 import time
 import numpy as np
 import math
+import threading
 
 # チャンネル3は手首で500側が内側に閉じる、2500側が上に上がる
 # チャンネル2は関節で500側が上向きに上げる
@@ -28,6 +29,10 @@ class AL5D:
         self.angles = [BASE_ANGLE] * TOTAL_CHANNELS  # 各チャンネルの角度を保持
         self.connect()
         self.initialize_position()
+        print("AL5Dクラスが初期化されました。")
+        self.ser_lock = (
+            threading.Lock()
+        )  # シリアルポートへのアクセスを同期させるためのロック
 
     def connect(self):
         try:
@@ -50,6 +55,15 @@ class AL5D:
             response = self.ser.read_all().decode("ascii")
             print(f"受信応答: {response}")
 
+    def send_command_with_time(self, channel, position, speed, move_time):
+        if self.ser and self.ser.is_open:
+            command = f"#{channel} P{position} S{speed} T{move_time}\r"
+            print(f"送信コマンド: {command}")
+            self.ser.write(command.encode("ascii"))
+            time.sleep(0.1)  # 各コマンドの間に少し待つ
+            response = self.ser.read_all().decode("ascii")
+            print(f"受信応答: {response}")
+
     def move_servo(self, channel, position, speed):
         if MIN_ANGLE <= position <= MAX_ANGLE:
             self.angles[channel] = position  # 角度を更新
@@ -60,7 +74,23 @@ class AL5D:
             position_ms = (position - MIN_ANGLE) * (2500 - 500) / (
                 MAX_ANGLE - MIN_ANGLE
             ) + 500
-            self.send_command(channel, int(position_ms), speed)
+            command = f"#{channel} P{int(position_ms)} S{speed}\r"
+            self.send_command_and_wait(command)
+        else:
+            print(f"無効な位置: {position}。範囲は{MIN_ANGLE}から{MAX_ANGLE}です。")
+
+    def move_servo_time(self, channel, position, speed, move_time):
+        if MIN_ANGLE <= position <= MAX_ANGLE:
+            self.angles[channel] = position  # 角度を更新
+            if channel == 0 or channel == 2:
+                position *= -1  # 角度の向きを揃える
+            # 角度を500msから2500msにマッピング
+            # -90度が500ms、90度が2500msになるように変換
+            position_ms = (position - MIN_ANGLE) * (2500 - 500) / (
+                MAX_ANGLE - MIN_ANGLE
+            ) + 500
+            command = f"#{channel} P{int(position_ms)} S{speed} T{move_time}\r"
+            self.send_command_and_wait(command)
         else:
             print(f"無効な位置: {position}。範囲は{MIN_ANGLE}から{MAX_ANGLE}です。")
 
@@ -115,14 +145,11 @@ class AL5D:
         # ベース座標系から見た腕の平面上の距離 r
         r = math.sqrt(x**2 + y**2)
 
-        # リンク1を考慮しない高さ
-        z_offset = z - LINK1_LENGTH
-
         # リンク1の高さを考慮しないベース座標から入力座標までの距離d
-        d = math.sqrt(r**2 + z_offset**2)
+        d = math.sqrt(r**2 + z**2)
 
         # dがリンク2とリンク3の長さの合計を超えていないか確認
-        if d > (L2 + L3):
+        if d > (L2 + L1):
             raise ValueError("目標位置が到達不可能です。")
 
         diff_x = (
@@ -208,6 +235,115 @@ class AL5D:
 
         return best_solution
 
+    def pulse_width_to_angle(self, pulse_width):
+        """
+        パルス幅（μs）を角度（度）に変換します。
+        -90度が500μs、90度が2500μsに対応しています。
+        """
+        MIN_PULSE = 500
+        MAX_PULSE = 2500
+        MIN_ANGLE = -90
+        MAX_ANGLE = 90
+        angle = (
+            (pulse_width - MIN_PULSE)
+            * (MAX_ANGLE - MIN_ANGLE)
+            / (MAX_PULSE - MIN_PULSE)
+        ) + MIN_ANGLE
+        return angle
+
+    def get_servo_angle(self, channel):
+        """
+        指定されたサーボチャンネルの現在の角度を取得します。
+
+        Args:
+            channel (int): サーボのチャンネル番号（0から5）
+
+        Returns:
+            float: サーボの現在の角度（度）、取得できない場合は None
+        """
+        if not (0 <= channel < TOTAL_CHANNELS):
+            print(
+                f"無効なチャンネル番号: {channel}. 0から{TOTAL_CHANNELS - 1}の範囲で指定してください。"
+            )
+            return None
+
+        try:
+            command = f"QP {channel}\r"
+            self.ser.write(command.encode("ascii"))
+            # レスポンスの待機時間を確保（最大5ms）
+            time.sleep(0.005)
+            response = self.ser.read(1)  # サーボごとに1バイトのレスポンス
+
+            if not response:
+                print("応答がありません。")
+                return None
+
+            pulse_width_byte = response[0]
+            pulse_width = pulse_width_byte * 10  # 10μsの解像度
+            # angle = self.pulse_width_to_angle(pulse_width)
+            return pulse_width
+
+        except serial.SerialException as e:
+            print(f"シリアル通信エラー: {e}")
+            return None
+
+    def query_movement_status(self):
+        """
+        モーターの動作状態を確認します。
+
+        Returns:
+            str: '.'（完了）または '+'（進行中）
+        """
+        try:
+            with self.ser_lock:
+                command = "Q\r"
+                self.ser.write(command.encode("ascii"))
+                # レスポンスの待機時間（最大5ms）
+                time.sleep(0.005)
+                response = self.ser.read(1).decode("ascii")
+                return response
+        except serial.SerialException as e:
+            print(f"シリアル通信エラー: {e}")
+            return None
+
+    def wait_for_move_complete(self, timeout=5):
+        """
+        モーターの動作が完了するまで待機します。
+
+        Args:
+            timeout (int): 最大待機時間（秒）
+
+        Returns:
+            bool: 動作が完了した場合は True、タイムアウトした場合は False
+        """
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            status = self.query_movement_status()
+            if status == ".":
+                return True
+            elif status == "+":
+                time.sleep(0.1)  # 100ms待機して再確認
+            else:
+                print("不明な応答を受信しました。")
+                return False
+        print("動作がタイムアウトしました。")
+        return False
+
+    def send_command_and_wait(self, command):
+        """
+        コマンドを送信し、動作が完了するまで待機します。
+
+        Args:
+            command (str): 送信するコマンド文字列
+        """
+        try:
+            with self.ser_lock:
+                self.ser.write(command.encode("ascii"))
+            if not self.wait_for_move_complete():
+                print("動作の完了を待機中に問題が発生しました。")
+        except serial.SerialException as e:
+            print(f"シリアル通信エラー: {e}")
+
 
 if __name__ == "__main__":
     # 60.00, 34.00, 278.00
@@ -220,20 +356,65 @@ if __name__ == "__main__":
             math.radians(0),
         )
     )
-    move_angles = robot_arm.inverse_kinematics(105, 75, 255)
-    print(f"move_anglesはこちら{move_angles}")
+    # robot_arm.move_servo_time(5, 0, BASE_SPEED, 3000)
+    # time.sleep(3)
+    robot_arm.move_servo_time(5, -50, BASE_SPEED, 3000)
 
-    robot_arm.move_servo(0, move_angles["angles"][0], BASE_SPEED)
-    robot_arm.move_servo(1, move_angles["angles"][1], BASE_SPEED)
-    robot_arm.move_servo(2, move_angles["angles"][2], BASE_SPEED)
-    robot_arm.move_servo(3, move_angles["angles"][3], BASE_SPEED)
-    print(
-        robot_arm.forward_kinematics(
-            math.radians(robot_arm.angles[0]),
-            math.radians(robot_arm.angles[1]),
-            math.radians(robot_arm.angles[2]),
-            THETA4,
-        )
-    )
-    print(robot_arm.angles)
+    robot_arm.move_servo(5, 90, BASE_SPEED)
+    # robot_arm.move_servo(0, -25, BASE_SPEED)
+    # robot_arm.move_servo(1, -55, BASE_SPEED)
+    # robot_arm.move_servo(2, 20, BASE_SPEED)
+    # robot_arm.move_servo(3, 45, BASE_SPEED)
+    # time.sleep(1)
+    # robot_arm.move_servo(5, 15, BASE_SPEED)
+    # time.sleep(1.5)
+    # robot_arm.move_servo(1, 0, BASE_SPEED)
+
+    # robot_arm.move_servo(0, 30, BASE_SPEED)
+    # time.sleep(1)
+    # robot_arm.move_servo(1, -45, BASE_SPEED)d
+    # robot_arm.move_servo(5, -44, BASE_SPEED)
+    # time.sleep(1.5)
+    # robot_arm.initialize_position()
+
+    # サーボチャンネル0の角度を取得
+    time.sleep(2)
+    angle_channel_0 = robot_arm.get_servo_angle(5)
+    if angle_channel_0 is not None:
+        print(f"チャンネル5の現在の角度: {angle_channel_0:.2f}度")
+
+    # # サーボチャンネル1の角度を取得
+    # angle_channel_1 = robot_arm.get_servo_angle(1)
+    # if angle_channel_1 is not None:
+    #     print(f"チャンネル1の現在の角度: {angle_channel_1:.2f}度")
+
+    robot_arm.close()
+    # robot_arm.move_servo_time(0, 45, BASE_SPEED, 3000)
+    # robot_arm.move_servo(1, -55, BASE_SPEED)
+    # robot_arm.move_servo(2, 20, BASE_SPEED)
+    # robot_arm.move_servo(3, 45, BASE_SPEED)
+    # robot_arm.move_servo_time(5, -30, BASE_SPEED, 3000)
+
+    # robot_arm.move_servo(3, 0, BASE_SPEED)
+    # robot_arm.move_servo(2, 0, BASE_SPEED)
+    # robot_arm.move_servo(1, 0, BASE_SPEED)
+    # robot_arm.move_servo(0, 0, BASE_SPEED)
+
+    # robot_arm.move_servo(1, -90, BASE_SPEED)
+    # move_angles = robot_arm.inverse_kinematics(5, 185, 95)
+    # print(f"move_anglesはこちら{move_angles}")
+
+    # robot_arm.move_servo(0, move_angles["angles"][0], BASE_SPEED)
+    # robot_arm.move_servo(1, move_angles["angles"][1], BASE_SPEED)
+    # robot_arm.move_servo(2, move_angles["angles"][2], BASE_SPEED)
+    # robot_arm.move_servo(3, move_angles["angles"][3], BASE_SPEED)
+    # print(
+    #     robot_arm.forward_kinematics(
+    #         math.radians(robot_arm.angles[0]),
+    #         math.radians(robot_arm.angles[1]),
+    #         math.radians(robot_arm.angles[2]),
+    #         THETA4,
+    #     )
+    # )
+    # print(robot_arm.angles)
     robot_arm.close()
