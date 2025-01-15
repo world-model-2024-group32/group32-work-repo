@@ -132,7 +132,45 @@ class Al5dPickPlaceEnv:
         return {
             "action": embodied.Space(np.int64, (), 0, 6),
         }
-    
+        
+    def get_obs(
+        self,
+        robot_in_safe_state: bool,
+        is_first: bool = False,
+        reward: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        color_image, depth_image = self.get_frames()
+
+        # change observations to be within reasonable values
+        gripper_pos, servo_angle, cart_pos = self._arm.get_robot_state()
+        grasped_side_one_hot = {
+            Side.OTHER: [1, 0, 0],
+            Side.LEFT: [0, 1, 0],
+            Side.RIGHT: [0, 0, 1],
+        }
+        gripper_side = self.arm_side()
+        obs = dict(
+            image=color_image,
+            depth=depth_image,
+            cartesian_position=cart_pos,
+            joint_positions=servo_angle,
+            gripper_pos=gripper_pos,
+            gripper_side=np.array(grasped_side_one_hot[self.grasped_bin], np.float32),
+            grasped_side=np.array(grasped_side_one_hot[gripper_side], np.float32),
+            is_last=False,
+            is_terminal=False,
+        )
+
+        if reward is None:
+            if robot_in_safe_state:
+                obs["reward"] = float(self.get_reward(obs))
+            else:
+                obs["reward"] = float(0)
+        else:
+            obs["reward"] = reward
+
+        obs["is_first"] = is_first
+        return obs
     # -------------------DayDreamer: pick and place---------------------------------------------
     def random_xy_grid(self, side: Side) -> Tuple[float, float]:
         if side == Side.LEFT:
