@@ -50,7 +50,7 @@ def forward_kinematics(theta1_deg, theta2_deg, theta3_deg, theta4_deg):
     z3 = z2 + L3 * math.sin(theta2 + theta3 + theta4)
 
     # 結果を返す
-    position = {"x": x3, "y": y3, "z": z3}
+    position = {"x": x2, "y": y2, "z": z2}
     return position
 
 

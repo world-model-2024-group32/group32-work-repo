@@ -4,24 +4,38 @@ import numpy as np
 import math
 import threading
 
-# チャンネル3は手首で500側が内側に閉じる、2500側が上に上がる
-# チャンネル2は関節で500側が上向きに上げる
-# チャンネル1
-# チャンネル0はベースの旋回2500側で右に回り、500側で左に回る
-# 500から2500
+# import cv2
+from typing import Dict, Any, Optional, Tuple
+
+# チャンネル設定
 BASE_ANGLE = 0
 MAX_ANGLE = 90
 MIN_ANGLE = -90
 TOTAL_CHANNELS = 6  # チャンネル数
-BASE_SPEED = 300
+BASE_SPEED = 500
 LINK1_LENGTH = 145  # mm
 LINK2_LENGTH = 130  # mm
 LINK3_LENGTH = 60  # mm
 THETA4 = math.radians(8)
+JOINT_NUM = 3
+
+joint_range = [
+    {"min": -math.pi / 2, "max": math.pi / 2},  # ジョイント0
+    {"min": -math.pi / 2, "max": math.pi / 2},  # ジョイント1
+    {"min": -math.pi / 2, "max": math.pi / 2},  # ジョイント2
+]
+
+
+# サイドの定義
+# class Side(enum.Enum):
+#     LEFT = 1
+#     RIGHT = 2
+#     OTHER = 3
 
 
 class AL5D:
     def __init__(self, port="/dev/tty.usbserial-AB0K6DQX", baudrate=9600):
+        self.ser_lock = threading.Lock()
         self.base_angle = BASE_ANGLE
         self.port = port
         self.baudrate = baudrate
@@ -30,9 +44,6 @@ class AL5D:
         self.connect()
         self.initialize_position()
         print("AL5Dクラスが初期化されました。")
-        self.ser_lock = (
-            threading.Lock()
-        )  # シリアルポートへのアクセスを同期させるためのロック
 
     def connect(self):
         try:
@@ -67,7 +78,7 @@ class AL5D:
     def move_servo(self, channel, position, speed):
         if MIN_ANGLE <= position <= MAX_ANGLE:
             self.angles[channel] = position  # 角度を更新
-            if channel == 0 or channel == 2:
+            if channel == 0 or channel == 1 or channel == 2:
                 position *= -1  # 角度の向きを揃える
             # 角度を500msから2500msにマッピング
             # -90度が500ms、90度が2500msになるように変換
@@ -112,128 +123,62 @@ class AL5D:
         angles = self.inverse_kinematics(target_x, target_y, target_z)
 
         # 各サーボを移動
-        for i, angle in enumerate(angles):
+        for i, angle in enumerate(angles["angles"]):
             self.move_servo(i, angle, BASE_SPEED)
 
-    def forward_kinematics(self, theta1, theta2, theta3, theta4):
-        print(f"θ1:{theta1},θ2:{theta2},θ3:{theta3}")
-        x1 = LINK1_LENGTH * (math.cos(theta1) * math.cos(theta2))
-        y1 = LINK1_LENGTH * (math.sin(theta1) * math.cos(theta2))
-        z1 = LINK1_LENGTH * math.sin(theta2)
-        x2 = x1 + (LINK2_LENGTH * (math.cos(theta1) * math.cos(theta2 + theta3)))
-        y2 = y1 + (LINK2_LENGTH * (math.sin(theta1) * math.cos(theta2 + theta3)))
-        z2 = z1 + (LINK2_LENGTH * math.sin(theta2 + theta3))
-        x3 = x2 + (
-            LINK3_LENGTH * (math.cos(theta1) * math.cos(theta2 + theta3 + theta4))
-        )
-        y3 = y2 + (
-            LINK3_LENGTH * (math.sin(theta1) * math.cos(theta2 + theta3 + theta4))
-        )
-        z3 = z2 + ((LINK3_LENGTH * math.sin(theta2 + theta3 + theta4)))
-        position = {"x": x3, "y": y3, "z": z3}
-        return position
+    def forward_kinematics(self, theta):
+        L2 = LINK1_LENGTH
+        L3 = LINK2_LENGTH
+
+        S1 = math.sin(theta[0])
+        C1 = math.cos(theta[0])
+        S2 = math.sin(theta[1])
+        C2 = math.cos(theta[1])
+        S23 = math.sin(theta[1] + theta[2])
+        C23 = math.cos(theta[1] + theta[2])
+
+        x = C1 * (L2 * C2 + L3 * C23)
+        y = S1 * (L2 * C2 + L3 * C23)
+        z = L2 * S2 + L3 * S23
+
+        return [x, y, z]
 
     def inverse_kinematics(self, x: float, y: float, z: float):
-        # リンクの長さ
-        L1 = LINK1_LENGTH
-        L2 = LINK2_LENGTH
-        L3 = LINK3_LENGTH
+        L2 = LINK1_LENGTH
+        L3 = LINK2_LENGTH
 
-        # θ1の計算
-        theta1 = math.atan2(y, x)
+        theta = [0.0 for _ in range(JOINT_NUM)]
 
-        # ベース座標系から見た腕の平面上の距離 r
-        r = math.sqrt(x**2 + y**2)
+        # 手先位置の値が可動範囲の外であればエラー値を返す
+        if (math.pow(L2 - L3, 2) > (x**2 + y**2 + z**2)) or (
+            (x**2 + y**2 + z**2) > math.pow(L2 + L3, 2)
+        ):
+            print("目標位置が可動範囲外です。")
+            return None
 
-        # リンク1の高さを考慮しないベース座標から入力座標までの距離d
-        d = math.sqrt(r**2 + z**2)
+        # 1軸目theta[0]と2軸目theta[1],4軸目theta[3]以外は0 radで固定
+        for i in range(JOINT_NUM):
+            theta[i] = 0.0
 
-        # dがリンク2とリンク3の長さの合計を超えていないか確認
-        if d > (L2 + L1):
-            raise ValueError("目標位置が到達不可能です。")
+        # 1軸目の角度
+        theta[0] = math.atan2(y, x)
 
-        diff_x = (
-            L3
-            * math.cos(self.angles[1] + self.angles[2] + self.angles[3])
-            * math.cos(self.angles[0])
-        )
-        diff_y = (
-            L3
-            * math.cos(self.angles[1] + self.angles[2] + self.angles[3])
-            * math.sin(self.angles[0])
-        )
-        diff_z = L3 * math.sin(self.angles[1] + self.angles[2] + self.angles[3])
-        x2 = x - diff_x
-        y2 = y - diff_y
-        z2 = z - diff_z
-        # θ3の計算（余弦定理）
-        cos_theta3 = (x2**2 + y2**2 + z2**2 - (L1**2) - L2**2) / (2 * L1 * L2)
-        cos_theta3 = max(-1.0, min(1.0, cos_theta3))  # 数値誤差の補正
-        theta3_options = [
-            math.acos(cos_theta3),
-            -math.acos(cos_theta3),
-        ]  # エルボーアップとエルボーダウン
-        valid_solutions = []
+        # 3軸目の角度
+        C3 = (x**2 + y**2 + z**2 - L2**2 - L3**2) / (2 * L2 * L3)
+        theta[2] = -math.acos(C3)  # acosは0:π/2の範囲で計算、θ3の可動はマイナス方向のみ
+        # 2軸目の角度
+        S3 = math.sin(theta[2])
+        C2 = (L2 + L3 * C3) * math.sqrt(x**2 + y**2) + (L3 * S3) * z
+        S2 = -(L3 * S3) * math.sqrt(x**2 + y**2) + (L2 + L3 * C3) * z
+        theta[1] = math.atan2(S2, C2)
 
-        for theta3 in theta3_options:
-            # θ2の計算
-            beta = math.atan2(z2, math.sqrt(x2**2 + y2**2))
-            gamma = math.acos(
-                (x2**2 + y2**2 + z2**2 + L1**2 - L2**2)
-                / (2 * L1 * math.sqrt(x2**2 + y2**2 + z2**2))
-            )
-            theta2_options = [beta + gamma, beta - gamma]
-
-            for theta2 in theta2_options:
-                # θ4は固定値
-                theta4 = THETA4
-
-                # ラジアンから度に変換
-                theta1_deg = math.degrees(theta1)
-                theta2_deg = math.degrees(theta2)
-                theta3_deg = math.degrees(theta3)
-                theta4_deg = math.degrees(theta4)
-
-                # 角度を -180 度から 180 度の範囲に正規化
-                theta1_deg = (theta1_deg + 180) % 360 - 180
-                theta2_deg = (theta2_deg + 180) % 360 - 180
-                theta3_deg = (theta3_deg + 180) % 360 - 180
-
-                # 角度の範囲チェック
-                if (
-                    MIN_ANGLE <= theta1_deg <= MAX_ANGLE
-                    and MIN_ANGLE <= theta2_deg <= MAX_ANGLE
-                    and MIN_ANGLE <= theta3_deg <= MAX_ANGLE
-                ):
-                    # エルボーアップ/ダウンの識別
-                    configuration = "Elbow Up" if theta3_deg < 0 else "Elbow Down"
-
-                    # 有効な解を追加
-                    valid_solutions.append(
-                        {
-                            "angles": [theta1_deg, theta2_deg, theta3_deg, theta4_deg],
-                            "configuration": configuration,
-                        }
-                    )
-
-        if not valid_solutions:
-            raise ValueError("有効な逆運動学の解が見つかりませんでした。")
-
-        # 順運動学との差が最も少ない解を選択
-        best_solution = None
-        min_difference = float("inf")
-        for solution in valid_solutions:
-            theta1_deg, theta2_deg, theta3_deg, theta4_deg = solution["angles"]
-            fk_result = self.forward_kinematics(
-                theta1_deg, theta2_deg, theta3_deg, theta4_deg
-            )
-            x_fk, y_fk, z_fk = fk_result["x"], fk_result["y"], fk_result["z"]
-            difference = abs(x_fk - x) + abs(y_fk - y) + abs(z_fk - z)
-            if difference < min_difference:
-                min_difference = difference
-                best_solution = solution
-
-        return best_solution
+        # 得られた関節角度が可動範囲外であればエラーを返す
+        for i in range(JOINT_NUM):
+            if theta[i] < joint_range[i]["min"] or theta[i] > joint_range[i]["max"]:
+                print(f"Theta[{i}] が可動範囲外です。")
+                return None
+        print(math.degrees(theta[0]), math.degrees(theta[1]), math.degrees(theta[2]))
+        return theta
 
     def pulse_width_to_angle(self, pulse_width):
         """
@@ -344,77 +289,208 @@ class AL5D:
         except serial.SerialException as e:
             print(f"シリアル通信エラー: {e}")
 
+    def get_robot_state(self) -> Dict[str, Any]:
+        """
+        ロボットの現在の状態を取得します。
+
+        Returns:
+            Dict[str, Any]: ロボットの状態情報
+        """
+        state = {
+            "base_angle": self.angles[0],
+            "joint_angles": self.angles[1:4],
+            "end_effector_pos": self.forward_kinematics(
+                math.radians(self.angles[0]),
+                math.radians(self.angles[1]),
+                math.radians(self.angles[2]),
+                math.radians(self.angles[3]),
+            ),
+            "gripper_pos": self.angles[5],
+        }
+        return state
+
+    def move_coordinate(self, x, y, z):
+        theta = self.inverse_kinematics(x, y, z)
+        theta = [math.degrees(angle) for angle in theta]
+        for i, angle in enumerate(theta):
+            self.move_servo(i, angle, BASE_SPEED)
+
+
+# class Environment:
+#     def __init__(self):
+#         self.robot = AL5D()
+#         self.camera = cv2.VideoCapture(0)  # PCのカメラを使用
+#         if not self.camera.isOpened():
+#             raise Exception("カメラを開けませんでした。")
+#         self.grasped_object = False
+#         self.grasped_bin = Side.OTHER
+
+#     def reset(self) -> Dict[str, Any]:
+#         self.robot.initialize_position()
+#         self.grasped_object = False
+#         self.grasped_bin = Side.OTHER
+#         ret, frame = self.camera.read()
+#         if not ret:
+#             raise Exception("カメラからの画像取得に失敗しました。")
+#         obs = {
+#             "base_angle": self.robot.angles[0],
+#             "joint_angles": self.robot.angles[1:4],
+#             "end_effector_pos": self.robot.get_robot_state()["end_effector_pos"],
+#             "gripper_pos": self.robot.get_robot_state()["gripper_pos"],
+#             "image": frame,
+#             "reward": 0.0,
+#             "is_first": True,
+#             "is_last": False,
+#             "is_terminal": False,
+#         }
+#         return obs
+
+#     def step(self, action: Dict[str, Any]) -> Dict[str, Any]:
+#         # 行動の実行
+#         if action["action"] == "move_x_positive":
+#             self.robot.move_incremental(10, 0, 0)
+#         elif action["action"] == "move_x_negative":
+#             self.robot.move_incremental(-10, 0, 0)
+#         elif action["action"] == "move_y_positive":
+#             self.robot.move_incremental(0, 10, 0)
+#         elif action["action"] == "move_y_negative":
+#             self.robot.move_incremental(0, -10, 0)
+#         elif action["action"] == "move_z_positive":
+#             self.robot.move_incremental(0, 0, 10)
+#         elif action["action"] == "move_z_negative":
+#             self.robot.move_incremental(0, 0, -10)
+#         elif action["action"] == "gripper_open":
+#             self.robot.move_servo(5, AL5D.GRIPPER_OPEN, BASE_SPEED)
+#         elif action["action"] == "gripper_close":
+#             self.robot.move_servo(5, AL5D.GRIPPER_CLOSE, BASE_SPEED)
+#         else:
+#             print(f"不明なアクション: {action['action']}")
+
+#         time.sleep(0.5)  # アクション完了まで待機
+
+#         # 観測の取得
+#         ret, frame = self.camera.read()
+#         if not ret:
+#             raise Exception("カメラからの画像取得に失敗しました。")
+
+#         state = self.robot.get_robot_state()
+#         obs = {
+#             "base_angle": self.robot.angles[0],
+#             "joint_angles": self.robot.angles[1:4],
+#             "end_effector_pos": state["end_effector_pos"],
+#             "gripper_pos": state["gripper_pos"],
+#             "image": frame,
+#             "reward": self.compute_reward(),
+#             "is_first": False,
+#             "is_last": False,
+#             "is_terminal": False,
+#         }
+#         return obs
+
+#     def compute_reward(self) -> float:
+#         reward = 0.0
+#         if self.grasped_object:
+#             if self.release_same_bin():
+#                 reward -= 1.0
+#             elif self.release_different_bin():
+#                 reward += 10.0
+#         else:
+#             if self.grasp_object():
+#                 reward += 1.0
+#         return reward
+
+#     def grasp_object(self) -> bool:
+#         # グリッパが開いていない時に物体を掴んだと仮定
+#         gripper_pos = self.robot.get_robot_state()["gripper_pos"]
+#         if gripper_pos < AL5D.GRIPPER_CLOSE:
+#             self.grasped_object = True
+#             self.grasped_bin = self.determine_bin()
+#             return True
+#         return False
+
+#     def release_same_bin(self) -> bool:
+#         # 同じ容器内で離した場合
+#         if self.grasped_object:
+#             self.grasped_object = False
+#             return True
+#         return False
+
+#     def release_different_bin(self) -> bool:
+#         # 異なる容器内で離した場合
+#         if self.grasped_object:
+#             self.grasped_object = False
+#             return True
+#         return False
+
+#     def determine_bin(self) -> Side:
+#         # エンドエフェクタの位置に基づいてコンテナを判断
+#         pos = self.robot.get_robot_state()["end_effector_pos"]
+#         if pos["x"] > 100:
+#             return Side.RIGHT
+#         elif pos["x"] < -100:
+#             return Side.LEFT
+#         else:
+#             return Side.OTHER
+
+#     def render(self):
+#         # 画像を表示
+#         ret, frame = self.camera.read()
+#         if ret:
+#             cv2.imshow("RGB Image", frame)
+#             cv2.waitKey(1)
+
+#     def close(self):
+#         self.robot.close()
+#         self.camera.release()
+#         cv2.destroyAllWindows()
+#         print("環境を終了しました。")
+
+
+# def main():
+#     env = Environment()
+#     obs = env.reset()
+#     try:
+#         while True:
+#             env.render()
+#             # 行動の例（ランダム）
+#             action = {
+#                 "action": np.random.choice(
+#                     [
+#                         "move_x_positive",
+#                         "move_x_negative",
+#                         "move_y_positive",
+#                         "move_y_negative",
+#                         "move_z_positive",
+#                         "move_z_negative",
+#                         "gripper_open",
+#                         "gripper_close",
+#                     ]
+#                 )
+#             }
+#             obs = env.step(action)
+#             print(f"観測: {obs}")
+#             if obs["is_terminal"]:
+#                 break
+#     except KeyboardInterrupt:
+#         print("中断されました。")
+#     finally:
+#         env.close()
+
 
 if __name__ == "__main__":
-    # 60.00, 34.00, 278.00
-    robot_arm = AL5D()
-    print(
-        robot_arm.forward_kinematics(
-            math.radians(robot_arm.angles[0]),
-            math.radians(robot_arm.angles[1]),
-            math.radians(robot_arm.angles[2]),
-            math.radians(0),
-        )
-    )
-    # robot_arm.move_servo_time(5, 0, BASE_SPEED, 3000)
-    # time.sleep(3)
-    robot_arm.move_servo_time(5, -50, BASE_SPEED, 3000)
-
-    robot_arm.move_servo(5, 90, BASE_SPEED)
-    # robot_arm.move_servo(0, -25, BASE_SPEED)
-    # robot_arm.move_servo(1, -55, BASE_SPEED)
-    # robot_arm.move_servo(2, 20, BASE_SPEED)
-    # robot_arm.move_servo(3, 45, BASE_SPEED)
-    # time.sleep(1)
-    # robot_arm.move_servo(5, 15, BASE_SPEED)
-    # time.sleep(1.5)
-    # robot_arm.move_servo(1, 0, BASE_SPEED)
-
-    # robot_arm.move_servo(0, 30, BASE_SPEED)
-    # time.sleep(1)
-    # robot_arm.move_servo(1, -45, BASE_SPEED)d
-    # robot_arm.move_servo(5, -44, BASE_SPEED)
-    # time.sleep(1.5)
-    # robot_arm.initialize_position()
-
-    # サーボチャンネル0の角度を取得
-    time.sleep(2)
-    angle_channel_0 = robot_arm.get_servo_angle(5)
-    if angle_channel_0 is not None:
-        print(f"チャンネル5の現在の角度: {angle_channel_0:.2f}度")
-
-    # # サーボチャンネル1の角度を取得
-    # angle_channel_1 = robot_arm.get_servo_angle(1)
-    # if angle_channel_1 is not None:
-    #     print(f"チャンネル1の現在の角度: {angle_channel_1:.2f}度")
-
-    robot_arm.close()
-    # robot_arm.move_servo_time(0, 45, BASE_SPEED, 3000)
-    # robot_arm.move_servo(1, -55, BASE_SPEED)
-    # robot_arm.move_servo(2, 20, BASE_SPEED)
-    # robot_arm.move_servo(3, 45, BASE_SPEED)
-    # robot_arm.move_servo_time(5, -30, BASE_SPEED, 3000)
-
-    # robot_arm.move_servo(3, 0, BASE_SPEED)
-    # robot_arm.move_servo(2, 0, BASE_SPEED)
-    # robot_arm.move_servo(1, 0, BASE_SPEED)
-    # robot_arm.move_servo(0, 0, BASE_SPEED)
-
-    # robot_arm.move_servo(1, -90, BASE_SPEED)
-    # move_angles = robot_arm.inverse_kinematics(5, 185, 95)
-    # print(f"move_anglesはこちら{move_angles}")
-
-    # robot_arm.move_servo(0, move_angles["angles"][0], BASE_SPEED)
-    # robot_arm.move_servo(1, move_angles["angles"][1], BASE_SPEED)
-    # robot_arm.move_servo(2, move_angles["angles"][2], BASE_SPEED)
-    # robot_arm.move_servo(3, move_angles["angles"][3], BASE_SPEED)
-    # print(
-    #     robot_arm.forward_kinematics(
-    #         math.radians(robot_arm.angles[0]),
-    #         math.radians(robot_arm.angles[1]),
-    #         math.radians(robot_arm.angles[2]),
-    #         THETA4,
-    #     )
-    # )
-    # print(robot_arm.angles)
-    robot_arm.close()
+    robot = AL5D()
+    angles = [
+        math.radians(robot.angles[0]),
+        math.radians(robot.angles[1]),
+        math.radians(robot.angles[2]),
+    ]
+    print(robot.angles)
+    print(robot.forward_kinematics(angles))
+    robot.move_coordinate(95, 225, 12)
+    angles = [
+        math.radians(robot.angles[0]),
+        math.radians(robot.angles[1]),
+        math.radians(robot.angles[2]),
+    ]
+    print(robot.angles)
+    print(robot.forward_kinematics(angles))
