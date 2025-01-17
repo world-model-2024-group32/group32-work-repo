@@ -1,4 +1,4 @@
-#オブジェクトの位置を指定して、逆運動学を解いて，アームを動かす
+#オブジェクトの位置を指定して、逆運動学を解いて，アームを動かす(0,1,2 キーでオブジェクトを指定)
 import pybullet as p
 import time
 import pybullet_data
@@ -11,11 +11,9 @@ p.setAdditionalSearchPath(pybullet_data.getDataPath())
 robot_orientation = p.getQuaternionFromEuler([0, 0, np.pi])
 robot_id = p.loadURDF("../al5d_description/urdf/al5d_robot.urdf", basePosition=[0.6, 0, 0.6], baseOrientation=robot_orientation, useFixedBase=True, globalScaling=2.0)
 
-# 平面追加
 plane_id = p.loadURDF("plane.urdf")
 table_id = p.loadURDF("table/table.urdf", basePosition=[0.5, 0, 0])
 
-# オブジェクトを追加
 object1_id = p.loadURDF("random_urdfs/000/000.urdf", basePosition=[0.2, -0.2, 0.6], globalScaling=0.8)
 object2_id = p.loadURDF("random_urdfs/000/000.urdf", basePosition=[0.1, 0.3, 0.6], globalScaling=0.8)
 

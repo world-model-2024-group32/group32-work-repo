@@ -41,7 +41,14 @@ def update_joint_angles(key):
         joint_angles[1] -= 0.1 
         joint_angles[2] += 0.1 
         joint_angles[3] -= 0.1
-    print(joint_angles)
+    #print(joint_angles)
+
+def print_end_effector_position():
+    # エンドエフェクタの位置を取得
+    end_effector_state = p.getLinkState(robot_id, end_effector_link_index)
+    end_effector_pos = end_effector_state[0]
+    print(f"End Effector Position: x={end_effector_pos[0]:.4f}, y={end_effector_pos[1]:.4f}, z={end_effector_pos[2]:.4f}")
+
 
 # urdfにエンドエフェクタのリンクが定義されていないため、動作しない
 def grasp_object():
@@ -71,6 +78,7 @@ while True:
     for key, state in keys.items():
         if state & p.KEY_WAS_TRIGGERED or state & p.KEY_IS_DOWN:
             update_joint_angles(key)
+            print_end_effector_position()
             if key == p.B3G_RETURN:
                 grasp_object()
 
